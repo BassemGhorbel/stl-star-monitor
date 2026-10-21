@@ -1,5 +1,7 @@
 #include "stl_star/trace.h"
 
+#include "stl_star/exponential_search.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -71,9 +73,9 @@ void Trace::validate() {
 //
 // Both predicates are monotone in i for fixed j (the offset decreases as i
 // grows and floating-point arithmetic is monotone), so the answer is a
-// boundary found by binary search.  On uniform traces an arithmetic guess is
-// corrected by a constant number of predicate checks, which gives the same
-// result as the binary search.
+// boundary, found by exponential search from the hint (a lower bound of the
+// answer).  On uniform traces an arithmetic guess is corrected by a constant
+// number of predicate checks, which gives the same boundary.
 // ---------------------------------------------------------------------------
 static int clamp_guess(double g, int lo, int hi) {
     if (!(g > lo)) return lo;     // also catches NaN / -inf
@@ -81,7 +83,7 @@ static int clamp_guess(double g, int lo, int hi) {
     return static_cast<int>(g);
 }
 
-int Trace::first_in_window_end(int j, double b) const {
+int Trace::first_in_window_end(int j, double b, int hint) const {
     auto ok = [&](int i) { return within_window_end(i, j, b); };
     if (std::isinf(b)) return 0;
     if (is_uniform) {
@@ -90,15 +92,11 @@ int Trace::first_in_window_end(int j, double b) const {
         while (i < j && !ok(i)) ++i;
         return i;
     }
-    int lo = 0, hi = j;             // ok(j) is always true
-    while (lo < hi) {
-        int mid = lo + (hi - lo) / 2;
-        if (ok(mid)) hi = mid; else lo = mid + 1;
-    }
-    return lo;
+    // ok is false...false true...true on [hint, j], and ok(j) is always true.
+    return first_true_from(std::min(std::max(hint, 0), j), j, ok);
 }
 
-int Trace::last_reaching_window_start(int j, double a) const {
+int Trace::last_reaching_window_start(int j, double a, int hint) const {
     auto ok = [&](int i) { return reaches_window_start(i, j, a); };
     if (a <= window_tol) return j;  // ok(j): offset 0 reaches the start (untimed windows)
     if (is_uniform) {
@@ -107,12 +105,10 @@ int Trace::last_reaching_window_start(int j, double a) const {
         while (i >= 0 && !ok(i)) --i;
         return i;
     }
-    int lo = -1, hi = j;            // answer in [-1, j]
-    while (lo < hi) {
-        int mid = lo + (hi - lo + 1) / 2;
-        if (ok(mid)) lo = mid; else hi = mid - 1;
-    }
-    return lo;
+    // ok is true...true false...false on [0, j] and ok(j) is false (a > tol),
+    // so the answer is one before the first i in [hint + 1, j] with !ok(i).
+    const int from = std::min(std::max(hint, -1), j - 1) + 1;
+    return first_true_from(from, j, [&](int i) { return !ok(i); }) - 1;
 }
 
 }  // namespace stl_star

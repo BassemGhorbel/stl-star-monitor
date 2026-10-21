@@ -66,12 +66,16 @@ IndexIntervals window_set(const Trace& trace, double a, double b);
 // Temporal operators (discrete-time STL semantics over the trace samples).
 //
 // `window` must be window_set(trace, a, b).
-// k = |output|; the log n factor appears on non-uniform traces with timed
+// k = |output|; the log factors appear on non-uniform traces with timed
 // windows only (the window lookups are O(1) for a = 0 and for b = inf).
+// The window lookups and the window-set intersection use exponential search
+// from the previous answer (exponential_search.h), so for q = |phi| lookups
+// the log n factor of a binary search becomes log(1 + n/q), and
+// q log(1 + n/q) <= min(n, q log n).
 // ---------------------------------------------------------------------------
 
 // F[a,b] phi : exists j, tau_j - tau_i in [a,b], phi(j).
-//   O(|phi| log n + |phi| log |window| + k)
+//   O(|phi| log(1 + n/|phi|) + |phi| log(1 + |window|/|phi|) + k)
 IndexIntervals eventually_of(const IndexIntervals& phi, double a, double b,
                              const IndexIntervals& window, const Trace& trace);
 
@@ -83,7 +87,7 @@ IndexIntervals always_of(const IndexIntervals& phi, double a, double b,
 // phi U[a,b] psi (strict):     exists j >= i, tau_j - tau_i in [a,b], psi(j),
 //                              phi(k) for all i <= k < j.
 // phi UNS[a,b] psi (non-strict): same but phi(k) for all i <= k <= j.
-//   O((|phi| + |psi|) log n + (|phi| + |psi|) log |window| + k)
+//   O(q log(1 + n/q) + q log(1 + |window|/q) + k),  q = |phi| + |psi|
 IndexIntervals until_of(const IndexIntervals& phi, const IndexIntervals& psi,
                         double a, double b, bool strict,
                         const IndexIntervals& window, const Trace& trace);

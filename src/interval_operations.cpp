@@ -1,5 +1,7 @@
 #include "stl_star/interval_operations.h"
 
+#include "stl_star/exponential_search.h"
+
 #include <algorithm>
 
 namespace stl_star {
@@ -82,9 +84,11 @@ IndexIntervals intersection_of(const IndexIntervals& a, const IndexIntervals& b)
     return out;
 }
 
-// Intersection with a window set, cost O(|a| log |w| + output) instead of
-// O(|a| + |w|): the window set is fixed for the whole run and may have up to
-// n/2 intervals on irregular traces, while `a` is usually much shorter.
+// Intersection with a window set, cost O(|a| log(1 + |w|/|a|) + output)
+// instead of O(|a| + |w|): the window set is fixed for the whole run and may
+// have up to n/2 intervals on irregular traces, while `a` is usually much
+// shorter.  The first window interval reaching iv.lo is found by exponential
+// search from the one found for the previous interval of `a`.
 static IndexIntervals intersect_with_window(const IndexIntervals& a,
                                             const IndexIntervals& w) {
     if (w.size() == 1) {                  // common case: one contiguous block
@@ -97,12 +101,12 @@ static IndexIntervals intersect_with_window(const IndexIntervals& a,
         return out;
     }
     IndexIntervals out;
-    auto it = w.begin();
+    const int m = static_cast<int>(w.size());
+    int first = 0;
     for (const auto& iv : a) {
-        it = std::lower_bound(it, w.end(), iv.lo,
-                              [](const IndexInterval& x, int v) { return x.hi < v; });
-        for (auto k = it; k != w.end() && k->lo <= iv.hi; ++k) {
-            int lo = std::max(iv.lo, k->lo), hi = std::min(iv.hi, k->hi);
+        first = first_true_from(first, m, [&](int k) { return w[k].hi >= iv.lo; });
+        for (int k = first; k < m && w[k].lo <= iv.hi; ++k) {
+            int lo = std::max(iv.lo, w[k].lo), hi = std::min(iv.hi, w[k].hi);
             if (lo <= hi) out.push_back({lo, hi});
         }
     }
@@ -136,15 +140,17 @@ IndexIntervals window_set(const Trace& trace, double a, double b) {
 // The first two conditions give a contiguous range [lo, hi]:
 //     lo = first i with tau_p - tau_i <= b,   hi = last i with tau_q - tau_i >= a
 // and the third is membership in the window set.  Ranges of successive runs
-// have non-decreasing endpoints, so they are merged on the fly.
+// have non-decreasing endpoints, so they are merged on the fly, and each
+// window lookup starts from the previous answer (exponential search).
 // ---------------------------------------------------------------------------
 IndexIntervals eventually_of(const IndexIntervals& phi, double a, double b,
                              const IndexIntervals& window, const Trace& trace) {
     IndexIntervals ranges;
     ranges.reserve(phi.size());
+    int lo = 0, hi = -1;                  // previous answers: hints for the next lookups
     for (const auto& run : phi) {
-        int lo = trace.first_in_window_end(run.lo, b);
-        int hi = trace.last_reaching_window_start(run.hi, a);
+        lo = trace.first_in_window_end(run.lo, b, lo);
+        hi = trace.last_reaching_window_start(run.hi, a, hi);
         if (lo <= hi) append_merged(ranges, lo, hi);
     }
     return intersect_with_window(ranges, window);
@@ -165,7 +171,10 @@ IndexIntervals always_of(const IndexIntervals& phi, double a, double b,
 // run X = [x1, x2] of psi inside that range the satisfied samples are exactly
 // those of F[a,b] X restricted to I.  Pieces are produced in order, so they are
 // merged on the fly; every (I, X) pair overlaps, and there are at most
-// |phi| + |psi| such pairs.
+// |phi| + |psi| such pairs.  The x1's and the x2's are non-decreasing over
+// the pairs (the runs of phi are separated by at least one sample, so the
+// pieces of the next run start after jmax), so each window lookup starts from
+// the previous answer (exponential search).
 //
 // Strict until additionally accepts j = i without any phi requirement when
 // 0 lies in [a, b]: those samples are exactly psi.
@@ -176,6 +185,7 @@ IndexIntervals until_of(const IndexIntervals& phi, const IndexIntervals& psi,
     const int n = trace.length;
     IndexIntervals ranges;
     size_t k = 0;
+    int first = 0, last = -1;             // previous answers: hints for the next lookups
     for (const auto& I : phi) {
         const int p = I.lo, q = I.hi;
         const int jmax = (strict && q + 1 < n) ? q + 1 : q;
@@ -183,8 +193,10 @@ IndexIntervals until_of(const IndexIntervals& phi, const IndexIntervals& psi,
         for (size_t m = k; m < psi.size() && psi[m].lo <= jmax; ++m) {
             int x1 = std::max(psi[m].lo, p);
             int x2 = std::min(psi[m].hi, jmax);
-            int lo = std::max(trace.first_in_window_end(x1, b), p);
-            int hi = std::min(trace.last_reaching_window_start(x2, a), q);
+            first = trace.first_in_window_end(x1, b, first);
+            last  = trace.last_reaching_window_start(x2, a, last);
+            int lo = std::max(first, p);
+            int hi = std::min(last, q);
             if (lo <= hi) append_merged(ranges, lo, hi);
         }
     }

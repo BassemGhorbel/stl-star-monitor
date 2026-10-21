@@ -69,13 +69,18 @@ struct Trace {
     bool within_window_end(int i, int j, double b) const    { return offset(i, j) <= b + window_tol; }
 
     // Window index queries used by the fast temporal operators.
-    // O(1) on uniform traces, O(log n) on non-uniform traces; O(1) for the
-    // untimed window [0, inf) (b = inf, resp. a = 0).
     //   first_in_window_end(j, b):        smallest i in [0, j] with within_window_end(i, j, b)
     //   last_reaching_window_start(j, a): largest i in [0, j] with reaches_window_start(i, j, a),
     //                                  or -1 if there is none.
-    int first_in_window_end(int j, double b) const;
-    int last_reaching_window_start(int j, double a) const;
+    // Both answers are non-decreasing in j.  `hint` must be a lower bound of
+    // the answer (typically the answer for a smaller j; 0, resp. -1, if none).
+    // O(1) on uniform traces and for the untimed window [0, inf) (b = inf,
+    // resp. a = 0).  On non-uniform traces, exponential search from the hint
+    // (exponential_search.h): O(log(answer - hint + 1)), so a sequence of q
+    // queries with increasing j, each hinted with the previous answer, costs
+    // O(q log(1 + n/q)) = O(min(n, q log n)) in total.
+    int first_in_window_end(int j, double b, int hint = 0) const;
+    int last_reaching_window_start(int j, double a, int hint = -1) const;
 
 private:
     void validate();

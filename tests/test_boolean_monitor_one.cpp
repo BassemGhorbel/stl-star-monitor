@@ -9,7 +9,9 @@
 //   E. Traces of 1 to 5000 samples, noisy and smooth: naive == fast.
 //   F. Scaling of the fast monitor (near n log n where the theory says so).
 //   G. Timestamps near 1e9, an inexact dt, values near 1e16.
+//   H. Exponential search: results and number of predicate calls.
 // Exit code is non-zero on any failure.
+#include "stl_star/exponential_search.h"
 #include "stl_star/signal_constraint_updater.h"
 #include "random_generators.h"
 
@@ -186,7 +188,10 @@ static void interval_operators_vs_pointwise() {
         check(eq(always_untimed_of(A, n), expect_pts([&](int i) {
                   for (int k = i; k < n; ++k) if (!P[k]) return false;
                   return true; })), "always untimed", ctx);
-        // Window index queries agree with the predicates.
+        // Window index queries agree with the predicates, without a hint, with
+        // the previous answer as hint (the way the operators chain them), and
+        // with a random hint that is a lower bound of the answer.
+        int prev_lo = 0, prev_hi = -1;
         for (int j = 0; j < n; ++j) {
             int lo = tr.first_in_window_end(j, b), hi = tr.last_reaching_window_start(j, a);
             int elo = 0;
@@ -194,6 +199,13 @@ static void interval_operators_vs_pointwise() {
             int ehi = j;
             while (ehi >= 0 && !tr.reaches_window_start(ehi, j, a)) --ehi;
             check(lo == elo && hi == ehi, "window index queries", ctx);
+            prev_lo = tr.first_in_window_end(j, b, prev_lo);
+            prev_hi = tr.last_reaching_window_start(j, a, prev_hi);
+            check(prev_lo == elo && prev_hi == ehi, "window index queries, chained hints", ctx);
+            const int hlo = R.uni(0, elo), hhi = R.uni(-1, ehi);
+            check(tr.first_in_window_end(j, b, hlo) == elo &&
+                      tr.last_reaching_window_start(j, a, hhi) == ehi,
+                  "window index queries, random lower-bound hints", ctx);
         }
         ++cases;
     }
@@ -484,6 +496,70 @@ static void large_times_and_magnitudes() {
     }
 }
 
+// ===========================================================================
+// H. Exponential search (window lookups on non-uniform traces)
+// ===========================================================================
+static void exponential_search() {
+    section("H. Exponential search: results and number of predicate calls");
+    // One query: the smallest true position, within 2 ceil(log2(d+1)) + 1 calls.
+    Rng R(7007);
+    for (int it = 0; it < 20000; ++it) {
+        const int lo = R.uni(-3, 50), hi = lo + R.uni(0, it % 10 == 0 ? 100000 : 300);
+        const int answer = R.uni(lo, hi);
+        long calls = 0;
+        const int got = first_true_from(lo, hi, [&](int i) {
+            ++calls;
+            check(lo <= i && i < hi, "exponential search only probes [lo, hi)");
+            return i >= answer;
+        });
+        const int d = answer - lo;
+        const long bound = 2 * static_cast<long>(std::ceil(std::log2(d + 1.0))) + 1;
+        check(got == answer && calls <= bound,
+              "exponential search: answer " + std::to_string(answer) + " in [" + std::to_string(lo) +
+                  "," + std::to_string(hi) + "], " + std::to_string(calls) + " calls <= " +
+                  std::to_string(bound));
+    }
+    // q sorted queries over n positions, each started at the previous answer:
+    // at most 2 q log2(1 + n/q) + 3q calls in total, which is O(min(n, q log n)).
+    // A binary search over [0, n] per query would take about q log2(n) calls.
+    const int n = 1 << 20;
+    for (int q : {1, 16, 1024, n / 64, n / 4, n}) {
+        std::vector<int> answers(q);
+        for (auto& x : answers) x = R.uni(0, n);
+        std::sort(answers.begin(), answers.end());
+        long calls = 0;
+        int prev = 0;
+        bool ok = true;
+        for (int x : answers) {
+            prev = first_true_from(prev, n, [&](int i) { ++calls; return i >= x; });
+            ok = ok && prev == x;
+        }
+        const double bound = 2.0 * q * std::log2(1.0 + static_cast<double>(n) / q) + 3.0 * q;
+        std::printf("  n=%d q=%-8d calls=%-9ld bound=%-10.0f (binary search ~%.0f)\n",
+                    n, q, calls, bound, q * std::log2(static_cast<double>(n)));
+        check(ok && calls <= bound, "q sorted queries cost O(q log(1 + n/q)), q = " + std::to_string(q));
+    }
+    // The temporal operators on a non-uniform trace whose input has n/2 runs
+    // (2 lookups per run): their result is unchanged (checked against the
+    // pointwise definitions in section B) and the lookups are now O(1)
+    // amortized; reported, not asserted (timings).
+    for (int m : {1 << 14, 1 << 16, 1 << 18}) {
+        std::vector<double> ts(m), sig(m);
+        for (int i = 0; i < m; ++i) {
+            ts[i] = i ? ts[i - 1] + ((i % 3) ? 0.25 : 1.0) : 0.0;
+            sig[i] = (i % 2) ? 1.0 : -1.0;
+        }
+        const Trace tr = Trace::make_non_uniform(ts, {sig});
+        std::vector<char> p(m);
+        for (int i = 0; i < m; ++i) p[i] = sig[i] > 0;
+        const IndexIntervals A = points_to_intervals(p);
+        const IndexIntervals W = window_set(tr, 1.0, 3.0);
+        IndexIntervals out;
+        const double ms = best_time_ms([&] { out = eventually_of(A, 1.0, 3.0, W, tr); }, 5);
+        std::printf("  F[1,3] on a non-uniform trace, n=%-7d |phi|=%-7zu %.3f ms\n", m, A.size(), ms);
+    }
+}
+
 int main() {
     std::printf("=== STL*_1 monitors: correctness and complexity ===\n");
     corner_cases();
@@ -493,5 +569,6 @@ int main() {
     traces_of_different_sizes();
     scaling();
     large_times_and_magnitudes();
+    exponential_search();
     return finish("test_boolean_monitor_one");
 }
